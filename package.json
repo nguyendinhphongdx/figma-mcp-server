@@ -7,8 +7,11 @@
   "engines": {
     "node": ">=20.6"
   },
+  "bin": {
+    "fmcp": "dist/cli.js"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node -e \"try{require('fs').chmodSync('dist/cli.js',0o755)}catch{}\"",
     "start": "node dist/main.js",
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",
