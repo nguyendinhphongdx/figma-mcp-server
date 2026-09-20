@@ -1,0 +1,30 @@
+{
+  "name": "figma-mcp-server",
+  "version": "0.1.0",
+  "description": "Self-hosted, read-only Figma MCP server (Streamable HTTP) with rate-limit governor, shared cache and bulk frame export.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "key:generate": "tsx scripts/generate-api-key.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "fflate": "^0.8.3",
+    "pino": "^10.3.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsx": "^4.23.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
