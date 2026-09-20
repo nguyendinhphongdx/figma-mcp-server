@@ -20,9 +20,13 @@ async function main(): Promise<void> {
     host,
     port,
     publicBaseUrl: config.server.publicBaseUrl,
-    users: [...config.auth.apiKeyHashes.keys()],
+    users: app.admin.listUsers().map((user) => user.name),
+    figmaTokenConfigured: app.admin.getFigmaToken() !== '',
     restrictedToFiles: config.figma.allowedFileKeys.length > 0,
   });
+  if (!app.admin.hasAdmin()) {
+    logger.info(`No admin account yet — open ${config.server.publicBaseUrl}/ to finish setup.`);
+  }
 
   const shutdown = (signal: string) => {
     logger.info('shutting down', { signal });

@@ -9,6 +9,8 @@ import type { ApiKeyAuthenticator, Principal } from '../../core/security/api-key
 import type { UrlSigner } from '../../core/security/url-signer.js';
 import { isExportId, type ExportStorage } from '../../core/storage/export-storage.js';
 import type { Logger } from '../../infra/logger.js';
+import { handleAdminRoute, type AdminRouteDeps } from './admin-routes.js';
+import { ADMIN_UI_HTML } from './admin-ui.js';
 import { archiveResource, fileResource } from './download-links.js';
 import type { SlidingWindowLimiter } from './sliding-window-limiter.js';
 
@@ -22,10 +24,11 @@ export interface HttpHandlerDeps {
   readonly logger: Logger;
   readonly allowedOrigins: readonly string[];
   readonly maxBodyBytes: number;
+  readonly admin: AdminRouteDeps;
 }
 
 /** A failure with a known HTTP status; everything else becomes an opaque 500. */
-class HttpError extends Error {
+export class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -45,7 +48,7 @@ const CONTENT_TYPES: Record<string, string> = {
 const FILE_ROUTE = /^\/exports\/([a-f0-9]{32})\/files\/([^/]+)$/;
 const ARCHIVE_ROUTE = /^\/exports\/([a-f0-9]{32})\/archive\.zip$/;
 
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+export function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -59,7 +62,7 @@ function jsonRpcError(res: ServerResponse, status: number, code: number, message
   sendJson(res, status, { jsonrpc: '2.0', error: { code, message }, id: null }, headers);
 }
 
-async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
+export async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
@@ -205,6 +208,15 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       res.setHeader('cache-control', 'no-store');
       return handleMcp(req, res);
     }
+    if (path === '/' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(ADMIN_UI_HTML);
+      return undefined;
+    }
+    if (await handleAdminRoute(req, res, url, deps.admin)) {
+      return undefined;
+    }
+
     if (req.method === 'GET') {
       const file = FILE_ROUTE.exec(path);
       if (file?.[1] && file[2]) {

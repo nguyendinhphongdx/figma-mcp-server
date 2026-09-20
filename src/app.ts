@@ -7,6 +7,8 @@ import { SlidingWindowLimiter } from './adapters/http/sliding-window-limiter.js'
 import { createMcpServer } from './adapters/mcp/create-mcp-server.js';
 import type { UseCases } from './adapters/mcp/tools.js';
 import type { AppConfig } from './config/config.js';
+import { AdminStore } from './core/admin/admin-store.js';
+import { SessionStore } from './core/admin/sessions.js';
 import { CachedLoader } from './core/cache/cached-loader.js';
 import { DiskCache, LayeredCache, MemoryTtlCache, type CachePort } from './core/cache/cache.js';
 import { FetchImageDownloader } from './core/figma/image-downloader.js';
@@ -43,6 +45,7 @@ export interface App {
   readonly useCases: UseCases;
   readonly governor: RateLimitGate;
   readonly storage: ExportStorage;
+  readonly admin: AdminStore;
   listen(): Promise<{ host: string; port: number }>;
   close(): Promise<void>;
 }
@@ -53,6 +56,11 @@ const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverrides = {}): App {
   const clock = overrides.clock ?? Date.now;
   const retryPolicy = { maxAttempts: config.figma.maxRetries + 1, baseDelayMs: 1_000, maxDelayMs: 30_000 };
+
+  // --- admin store (Figma token + users are hot-reloadable; everything else is static) ---
+  const adminStore = new AdminStore(join(config.storage.dataDir, 'admin.json'));
+  adminStore.seedFromEnv(config.figma.token, config.auth.apiKeyHashes);
+  const sessions = new SessionStore(clock);
 
   // --- rate limiting + Figma access -------------------------------------------------------
   const governor = new TokenBucketGovernor({
@@ -69,7 +77,7 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
   const api: FigmaApi =
     overrides.figmaApi ??
     new HttpFigmaApi({
-      token: () => config.figma.token,
+      token: () => adminStore.getFigmaToken(),
       baseUrl: config.figma.apiBaseUrl,
       gate: governor,
       retryPolicy,
@@ -129,9 +137,10 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
 
   // --- HTTP ------------------------------------------------------------------------------
   const limiter = new SlidingWindowLimiter(config.auth.requestsPerMinutePerUser, 60_000, clock);
+  const loginLimiter = new SlidingWindowLimiter(10, 60_000, clock);
   const server = createServer(
     createHttpHandler({
-      authenticator: new ApiKeyAuthenticator(() => config.auth.apiKeyHashes),
+      authenticator: new ApiKeyAuthenticator(() => adminStore.getApiKeyHashes()),
       limiter,
       signer,
       storage,
@@ -139,6 +148,13 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
       logger,
       allowedOrigins: config.server.allowedOrigins,
       maxBodyBytes: config.server.maxRequestBodyBytes,
+      admin: {
+        store: adminStore,
+        sessions,
+        loginLimiter,
+        secureCookies: config.server.publicBaseUrl.startsWith('https://'),
+        logger,
+      },
     }),
   );
 
@@ -148,6 +164,8 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
     Promise.all([storage.purgeOlderThan(cutoff), cache.sweep()])
       .then(([exports, cacheEntries]) => {
         limiter.sweep();
+        loginLimiter.sweep();
+        sessions.sweep();
         if (exports > 0 || cacheEntries > 0) logger.info('housekeeping', { exportsRemoved: exports, cacheEntriesRemoved: cacheEntries });
       })
       .catch((error: unknown) => logger.warn('housekeeping failed', { reason: String(error) }));
@@ -159,6 +177,7 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
     useCases,
     governor,
     storage,
+    admin: adminStore,
     listen: () =>
       new Promise((resolve, reject) => {
         server.once('error', reject);
