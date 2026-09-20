@@ -1,14 +1,23 @@
 {
-  "name": "figma-mcp-server",
+  "name": "@hanoilab/figma-mcp-server",
   "version": "0.1.0",
   "description": "Self-hosted, read-only Figma MCP server (Streamable HTTP) with rate-limit governor, shared cache and bulk frame export.",
-  "private": true,
   "type": "module",
   "engines": {
     "node": ">=20.6"
   },
+  "packageManager": "pnpm@10.32.1",
   "bin": {
     "fmcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    ".env.example",
+    "examples",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node -e \"try{require('fs').chmodSync('dist/cli.js',0o755)}catch{}\"",
