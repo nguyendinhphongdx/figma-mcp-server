@@ -2,19 +2,25 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { IMAGE_FORMATS } from '../../core/figma/figma-api.js';
 import type { ExportFramesUseCase } from '../../features/export/export-frames.js';
+import type { GetSvgUseCase } from '../../features/export/get-svg.js';
 import type { ListFramesUseCase } from '../../features/frames/list-frames.js';
 import type { GetNodeTreeUseCase } from '../../features/nodes/get-node-tree.js';
+import type { GetNodeSpecUseCase } from '../../features/nodes/get-node-spec.js';
+import type { SearchNodesUseCase } from '../../features/search/search-nodes.js';
 import type { ListLibraryUseCase } from '../../features/library/list-library.js';
 import type { GetDesignTokensUseCase } from '../../features/tokens/design-tokens.js';
 import type { GetCommentsUseCase } from '../../features/comments/get-comments.js';
 import type { GetQuotaStatusUseCase } from '../../features/quota/get-quota-status.js';
-import { runTool, type ToolContext } from './tool-helpers.js';
+import { runMediaTool, runTool, type ToolContext } from './tool-helpers.js';
 
 /** Everything the MCP adapter needs from the application layer. */
 export interface UseCases {
   readonly listFrames: ListFramesUseCase;
+  readonly searchNodes: SearchNodesUseCase;
   readonly getNodeTree: GetNodeTreeUseCase;
+  readonly getNodeSpec: GetNodeSpecUseCase;
   readonly exportFrames: ExportFramesUseCase;
+  readonly getSvg: GetSvgUseCase;
   readonly listStyles: ListLibraryUseCase;
   readonly listComponents: ListLibraryUseCase;
   readonly getDesignTokens: GetDesignTokensUseCase;
@@ -39,7 +45,9 @@ export function registerTools(server: McpServer, useCases: UseCases, context: To
       description:
         'List the pages of a Figma file and their top-level frames/sections/components (id, name, size). ' +
         'Start here to find node ids to export or inspect. Costs 1 Tier-1 Figma request on a cold cache, free afterwards ' +
-        '(the result is cached and shared by the whole team). Also makes later exports name files after layers for free.',
+        '(the result is cached and shared by the whole team). Also makes later exports name files after layers for free. ' +
+        'Large files run to thousands of frames: results are paged (default 200), and `hasMore` says there are more. ' +
+        'If you already know roughly what the layer is called, figma_search_nodes is smaller and cheaper than paging through this.',
       inputSchema: {
         file,
         page: z.string().optional().describe('Only pages whose name contains this text (case-insensitive).'),
@@ -47,11 +55,76 @@ export function registerTools(server: McpServer, useCases: UseCases, context: To
           .array(z.string())
           .optional()
           .describe('Node types to keep. Default: FRAME, SECTION, COMPONENT, COMPONENT_SET.'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Nodes to return across all pages. Default 200.'),
+        offset: z.number().int().min(0).optional().describe('Nodes to skip, for paging. Default 0.'),
         refresh,
       },
       annotations: { title: 'List Figma pages and frames', ...READ_ONLY },
     },
     (args) => runTool(context, 'figma_list_frames', () => useCases.listFrames.execute(args)),
+  );
+
+  server.registerTool(
+    'figma_search_nodes',
+    {
+      title: 'Find Figma layers by name',
+      description:
+        'Find layers whose name matches a query, and get back their node ids, type, page and path. ' +
+        'Matching ignores case and Vietnamese diacritics, so "truong ban" finds "Trường bắn". ' +
+        'By default it searches the top level of every page and costs nothing once any tool has read the file ' +
+        '(it reuses the same cached outline as figma_list_frames). Prefer it over paging through figma_list_frames ' +
+        'when you know what the layer is called. ' +
+        'WARNING: `deep: true` reads the whole file tree in one request, and Figma bills that endpoint by response ' +
+        'size rather than by request count — on a large file a deep index can exhaust the shared Tier-1 budget by ' +
+        'itself and block every user for days. Try the default shallow search first; only go deep when it found ' +
+        'nothing, keep `depth` as low as it can be (default 3), and check figma_quota_status beforehand. ' +
+        'The index is cached per file and depth, so pay it once.',
+      inputSchema: {
+        file,
+        query: z.string().min(1).describe('Text to find in layer names. Case- and diacritic-insensitive.'),
+        types: z.array(z.string()).optional().describe('Node types to keep. Default: any type.'),
+        page: z.string().optional().describe('Only pages whose name contains this text.'),
+        deep: z
+          .boolean()
+          .optional()
+          .describe('Search nested layers by reading the whole file tree. Expensive on large files — see the warning. Default false.'),
+        depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe('Levels to index when `deep`. Default 3. Each extra level multiplies the payload Figma bills you for.'),
+        limit: z.number().int().min(1).max(500).optional().describe('Matches to return. Default 50.'),
+        refresh,
+      },
+      annotations: { title: 'Find Figma layers by name', ...READ_ONLY },
+    },
+    (args) => runTool(context, 'figma_search_nodes', () => useCases.searchNodes.execute(args)),
+  );
+
+  server.registerTool(
+    'figma_get_node_spec',
+    {
+      title: 'Read a Figma screen as a code-ready spec',
+      description:
+        'Read a frame and get back a flattened spec you can write code from in ONE call: ready-to-paste CSS declarations ' +
+        '(flex direction, gap, padding, background, border, radius, box-shadow, font), all text content however deep it sits, ' +
+        'and componentId for instances. Content-free wrapper layers are removed, so text is not buried under three levels ' +
+        'of "Container". Use this, not figma_get_node_tree, when the goal is to implement a design; use figma_get_node_tree ' +
+        'when you need Figma\'s exact structure and raw field values. ' +
+        '1 batched Tier-1 request, cached and shared with figma_get_node_tree at the same depth. ' +
+        '`vectorNodes` lists the icons in the result: pass those to figma_get_svg to get their shape.',
+      inputSchema: {
+        ids: z.array(z.string()).min(1).max(10).describe('Node ids ("12:34" or "12-34") or Figma frame links.'),
+        file: file.optional().describe('Figma file URL or key. Optional when ids are full Figma links.'),
+        depth: z.number().int().min(1).max(20).optional().describe('Levels of children to read. Default 10.'),
+        maxNodes: z.number().int().min(1).max(5000).optional().describe('Cap on layers read. Default 1500.'),
+        refresh,
+      },
+      annotations: { title: 'Read a Figma screen as a code-ready spec', ...READ_ONLY },
+    },
+    (args) => runTool(context, 'figma_get_node_spec', () => useCases.getNodeSpec.execute(args)),
   );
 
   server.registerTool(
@@ -87,7 +160,9 @@ export function registerTools(server: McpServer, useCases: UseCases, context: To
         'download links (plus one zip link); nothing is sent inline. ALL nodes are batched into as few Figma requests as ' +
         'possible and image URLs are cached, so exporting the same frames again costs zero Figma requests. ' +
         'Pass every node in ONE call rather than one call per frame. If Figma rate-limits the run, the result is partial ' +
-        'and `rateLimited` says when to retry.',
+        'and `rateLimited` says when to retry. ' +
+        'Set `inline: true` to also receive the images in this result and look at them yourself — up to 5 png/jpg frames; ' +
+        '`inlineSkipped` says why if the limits were not met.',
       inputSchema: {
         nodes: z.array(z.string()).min(1).max(1000).describe('Node ids ("12:34" or "12-34") or Figma frame links.'),
         file: file.optional().describe('Figma file URL or key. Optional when nodes are full Figma links.'),
@@ -96,14 +171,44 @@ export function registerTools(server: McpServer, useCases: UseCases, context: To
         useAbsoluteBounds: z.boolean().optional().describe('Export the full node bounds without cropping.'),
         useLayerNames: z.boolean().optional().describe('Name files after layer names. Default true.'),
         createArchive: z.boolean().optional().describe('Also return a zip of all files. Default true.'),
+        inline: z
+          .boolean()
+          .optional()
+          .describe('Also return the images in this result so you can see them. png/jpg only, at most 5. Default false.'),
         refresh,
       },
       annotations: { title: 'Export Figma frames as images', readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: true },
     },
     (args) =>
-      runTool(context, 'figma_export_frames', () =>
-        useCases.exportFrames.execute({ ...args, format: args.format as (typeof IMAGE_FORMATS)[number] | undefined }),
-      ),
+      runMediaTool(context, 'figma_export_frames', async () => {
+        const { previews, ...data } = await useCases.exportFrames.execute({
+          ...args,
+          format: args.format as (typeof IMAGE_FORMATS)[number] | undefined,
+        });
+        return { data, ...(previews ? { images: previews } : {}) };
+      }),
+  );
+
+  server.registerTool(
+    'figma_get_svg',
+    {
+      title: 'Read Figma vectors as SVG source',
+      description:
+        'Return the SVG source of icons and vector layers inline, ready to paste into markup. ' +
+        'Use this for anything you have to draw: the node tree gives a VECTOR\'s bounds and colours but never its path, ' +
+        'and figma_export_frames only gives a file to download. ' +
+        '1 Tier-1 request per batch, and the render URLs are shared with figma_export_frames, so exporting the same nodes ' +
+        'as svg first makes this free. Oversized SVGs are reported in `failed` rather than returned; raise maxBytesPerNode ' +
+        'or export them as files instead.',
+      inputSchema: {
+        nodes: z.array(z.string()).min(1).max(50).describe('Node ids ("12:34" or "12-34") or Figma frame links.'),
+        file: file.optional().describe('Figma file URL or key. Optional when nodes are full Figma links.'),
+        maxBytesPerNode: z.number().int().min(256).max(524288).optional().describe('Skip SVGs larger than this. Default 24576.'),
+        refresh,
+      },
+      annotations: { title: 'Read Figma vectors as SVG source', ...READ_ONLY },
+    },
+    (args) => runTool(context, 'figma_get_svg', () => useCases.getSvg.execute(args)),
   );
 
   server.registerTool(

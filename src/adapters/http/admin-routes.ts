@@ -10,6 +10,8 @@ export interface AdminRouteDeps {
   readonly sessions: SessionStore;
   readonly loginLimiter: SlidingWindowLimiter;
   readonly secureCookies: boolean;
+  /** The same view `figma_quota_status` gives a model, for the humans who share the budget. */
+  readonly quota: { execute(): unknown };
   readonly logger: Logger;
 }
 
@@ -155,6 +157,13 @@ export async function handleAdminRoute(
     deps.store.setFigmaToken(figmaToken);
     deps.logger.info('admin updated Figma token', { admin });
     sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (path === '/api/admin/quota' && req.method === 'GET') {
+    requireSession(req, deps);
+    // Reading the budget costs nothing and touches no Figma endpoint, so polling it is safe.
+    sendJson(res, 200, deps.quota.execute());
     return true;
   }
 

@@ -40,7 +40,27 @@ export const FIXTURE = {
       id: '0:2',
       name: 'Dashboard',
       children: [
-        { id: '2:1', name: 'Home', type: 'FRAME', absoluteBoundingBox: box(1440, 900) },
+        {
+          id: '2:1',
+          name: 'Home',
+          type: 'FRAME',
+          absoluteBoundingBox: box(1440, 900),
+          // Nested on purpose: only a deep search can reach these.
+          children: [
+            {
+              id: '2:10',
+              name: 'Thanh điều hướng',
+              type: 'FRAME',
+              absoluteBoundingBox: box(1440, 64),
+              children: [
+                { id: '2:11', name: 'Nút Lưu', type: 'INSTANCE', absoluteBoundingBox: box(80, 32) },
+                // Figma names a text layer after its content, so long names containing the query
+                // are the common case, not the exception.
+                { id: '2:12', name: 'Quay về Home để xem báo cáo', type: 'TEXT', absoluteBoundingBox: box(200, 20) },
+              ],
+            },
+          ],
+        },
         { id: '2:2', name: 'Settings', type: 'FRAME', absoluteBoundingBox: box(1440, 900, 1500, 0) },
         { id: '2:3', name: 'Reports', type: 'SECTION' },
       ],
@@ -175,6 +195,15 @@ export class FakeFigma {
       if (status) {
         res.writeHead(status);
         res.end();
+        return;
+      }
+      if (name.endsWith('.svg')) {
+        res.writeHead(200, { 'content-type': 'image/svg+xml' });
+        // `1:3` stands in for an illustration too large to inline; everything else is a small icon.
+        const body = name.startsWith('1:3')
+          ? `<svg viewBox="0 0 16 16">${'<path d="M2 8h12"/>'.repeat(200)}</svg>`
+          : '<svg width="16" height="16" viewBox="0 0 16 16">\n  <path d="M2 8h12" stroke="#000"/>\n</svg>';
+        res.end(`<?xml version="1.0"?>\n${body}`);
         return;
       }
       res.writeHead(200, { 'content-type': 'image/jpeg' });

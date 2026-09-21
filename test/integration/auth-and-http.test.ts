@@ -106,11 +106,14 @@ describe('MCP protocol', () => {
       'figma_export_frames',
       'figma_get_comments',
       'figma_get_design_tokens',
+      'figma_get_node_spec',
       'figma_get_node_tree',
+      'figma_get_svg',
       'figma_list_components',
       'figma_list_frames',
       'figma_list_styles',
       'figma_quota_status',
+      'figma_search_nodes',
     ]);
     expect(byName.get('figma_list_frames')?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get('figma_export_frames')?.annotations?.readOnlyHint).toBe(false);

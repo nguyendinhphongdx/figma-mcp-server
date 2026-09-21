@@ -40,9 +40,18 @@ export function toToolError(error: unknown): ToolErrorPayload {
   return { error: { code: 'INTERNAL', message: 'Unexpected server error. It has been logged.' } };
 }
 
-function ok(data: object): CallToolResult {
+/** An image the tool sends alongside its JSON payload. */
+export interface InlineImage {
+  readonly mimeType: string;
+  readonly base64: string;
+}
+
+function ok(data: object, images: readonly InlineImage[] = []): CallToolResult {
   return {
-    content: [{ type: 'text', text: JSON.stringify(data) }],
+    content: [
+      { type: 'text', text: JSON.stringify(data) },
+      ...images.map((image) => ({ type: 'image' as const, data: image.base64, mimeType: image.mimeType })),
+    ],
     structuredContent: data as Record<string, unknown>,
   };
 }
@@ -64,11 +73,30 @@ export async function runTool(
   tool: string,
   operation: () => Promise<object>,
 ): Promise<CallToolResult> {
+  return runMediaTool(context, tool, async () => ({ data: await operation() }));
+}
+
+/**
+ * Like `runTool`, but the operation may also return images to attach as content blocks.
+ * The images never reach `data`: base64 in the JSON payload would be billed as text tokens and
+ * read by nothing.
+ */
+export async function runMediaTool(
+  context: ToolContext,
+  tool: string,
+  operation: () => Promise<{ data: object; images?: readonly InlineImage[] }>,
+): Promise<CallToolResult> {
   const startedAt = Date.now();
   try {
-    const data = await operation();
-    context.logger.info('tool call', { tool, principal: context.principal.name, ms: Date.now() - startedAt, ok: true });
-    return ok(data);
+    const { data, images } = await operation();
+    context.logger.info('tool call', {
+      tool,
+      principal: context.principal.name,
+      ms: Date.now() - startedAt,
+      ok: true,
+      ...(images?.length ? { images: images.length } : {}),
+    });
+    return ok(data, images ?? []);
   } catch (error) {
     const payload = toToolError(error);
     const level = error instanceof AppError ? 'warn' : 'error';

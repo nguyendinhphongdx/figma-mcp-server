@@ -9,7 +9,10 @@ const INSTRUCTIONS = [
   'Read-only access to Figma plus bulk image export, shared by a team through one Figma token.',
   'The Figma API budget is small and shared: batch node ids into one call, reuse cached results,',
   'check figma_quota_status before big operations, and never retry a rate-limited call before its retryAfterSeconds.',
-  'Typical flow: figma_list_frames -> pick node ids -> figma_export_frames (or figma_get_node_tree for details).',
+  'To find a frame: figma_search_nodes by name, or figma_list_frames to browse a file page by page.',
+  'To implement a design: figma_get_node_spec for one flattened, code-ready call, then figma_get_svg for the icons it lists',
+  'in `vectorNodes`; use figma_get_node_tree only when you need Figma\'s raw structure.',
+  'To look at a frame: figma_export_frames with `inline: true`.',
 ].join(' ');
 
 /**
