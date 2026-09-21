@@ -20,7 +20,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node -e \"try{require('fs').chmodSync('dist/cli.js',0o755)}catch{}\"",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-docs.mjs",
     "start": "node dist/main.js",
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",

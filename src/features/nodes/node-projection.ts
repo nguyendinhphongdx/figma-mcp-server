@@ -75,6 +75,11 @@ function projectStyle(node: FigmaNode): Record<string, unknown> {
   if (strokes.length > 0) {
     style.strokes = strokes;
     if (typeof node.strokeWeight === 'number') style.strokeWeight = node.strokeWeight;
+    // A one-sided stroke (an underlined tab, a table row divider) is a different border in CSS
+    // than a uniform one, and `strokeWeight` alone cannot tell them apart.
+    if (node.individualStrokeWeights && typeof node.individualStrokeWeights === 'object') {
+      style.individualStrokeWeights = node.individualStrokeWeights;
+    }
   }
 
   if (Array.isArray(node.effects) && node.effects.length > 0) {

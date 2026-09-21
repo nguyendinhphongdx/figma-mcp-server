@@ -40,6 +40,8 @@ const envSchema = z.object({
   FIGMA_TIER2_RPM: positiveInt(25),
   FIGMA_TIER3_RPM: positiveInt(50),
   FIGMA_MAX_QUEUE_WAIT_SECONDS: positiveInt(20),
+  /** Response bytes that count as one extra request's worth of budget. See the governor. */
+  FIGMA_COST_BYTES_PER_UNIT: positiveInt(512 * 1024),
   FIGMA_MAX_RETRY_AFTER_WAIT_SECONDS: positiveInt(60),
   FIGMA_REQUEST_TIMEOUT_SECONDS: positiveInt(120),
   FIGMA_MAX_RETRIES: z.coerce.number().int().min(0).default(3),
@@ -84,6 +86,7 @@ export interface AppConfig {
     readonly allowedFileKeys: readonly string[];
     readonly requestsPerMinute: Readonly<Record<Tier, number>>;
     readonly maxQueueWaitMs: number;
+    readonly costBytesPerUnit: number;
     readonly maxRetryAfterWaitSeconds: number;
     readonly requestTimeoutMs: number;
     readonly maxRetries: number;
@@ -136,6 +139,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>>): A
       allowedFileKeys: values.FIGMA_ALLOWED_FILE_KEYS,
       requestsPerMinute: { 1: values.FIGMA_TIER1_RPM, 2: values.FIGMA_TIER2_RPM, 3: values.FIGMA_TIER3_RPM },
       maxQueueWaitMs: values.FIGMA_MAX_QUEUE_WAIT_SECONDS * 1000,
+      costBytesPerUnit: values.FIGMA_COST_BYTES_PER_UNIT,
       maxRetryAfterWaitSeconds: values.FIGMA_MAX_RETRY_AFTER_WAIT_SECONDS,
       requestTimeoutMs: values.FIGMA_REQUEST_TIMEOUT_SECONDS * 1000,
       maxRetries: values.FIGMA_MAX_RETRIES,

@@ -124,6 +124,33 @@ describe('Admin UI/API', () => {
     expect(response.status).toBe(403);
   });
 
+  it('shows the shared Figma budget to a logged-in admin, and to nobody else', async () => {
+    app = await startWithoutSeed();
+
+    const anonymous = await fetch(`${app.baseUrl}/api/admin/quota`);
+    expect(anonymous.status).toBe(401);
+
+    const setup = await fetch(`${app.baseUrl}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'root', password: 'a-strong-password' }),
+    });
+    const cookie = extractCookie(setup);
+
+    const response = await fetch(`${app.baseUrl}/api/admin/quota`, { headers: { cookie } });
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      tiers: Array<{ tier: number; bytesLastHour: number; blockedUntil: string | null }>;
+      cache: { hits: number };
+    };
+    expect(body.tiers.map((tier) => tier.tier)).toEqual([1, 2, 3]);
+    expect(body.tiers[0]?.bytesLastHour).toBe(0);
+    expect(body.cache).toBeDefined();
+    // Reading the budget must never itself spend it.
+    expect(figma.api('/v1/')).toHaveLength(0);
+  });
+
   it('rate-limits repeated failed logins', async () => {
     app = await startWithoutSeed();
     await fetch(`${app.baseUrl}/api/admin/setup`, {

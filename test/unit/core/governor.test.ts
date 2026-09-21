@@ -154,3 +154,62 @@ describe('TokenBucketGovernor status', () => {
     expect(governor.status().tiers[0]?.rateLimitedLast24h).toBe(0);
   });
 });
+
+describe('cost accounting', () => {
+  it('charges a large response extra budget, because Figma bills by response size', () => {
+    const { governor } = makeGovernor({ costBytesPerUnit: 1_000 });
+
+    const before = governor.status().tiers[0]?.availableSlots;
+    governor.reportCost(1, 3_500); // three whole units beyond the request itself
+    const after = governor.status().tiers[0]?.availableSlots;
+
+    expect(before).toBe(3);
+    expect(after).toBe(0);
+  });
+
+  it('reports bytes and the extra cost they caused', () => {
+    const { governor } = makeGovernor({ costBytesPerUnit: 1_000 });
+    governor.reportCost(1, 2_400);
+
+    const tier = governor.status().tiers[0];
+    expect(tier?.bytesLastHour).toBe(2_400);
+    expect(tier?.costUnitsLastHour).toBe(2);
+  });
+
+  it('ignores a response too small to matter', () => {
+    const { governor } = makeGovernor({ costBytesPerUnit: 1_000 });
+    governor.reportCost(1, 999);
+    expect(governor.status().tiers[0]?.availableSlots).toBe(3);
+  });
+});
+
+describe('surviving a restart', () => {
+  it('still refuses requests for a penalty learned before the restart', async () => {
+    const clock = new FakeClock();
+    let saved: unknown;
+    const store = { load: () => saved as never, save: (snapshot: unknown) => { saved = snapshot; } };
+
+    const first = makeGovernor({ store }, clock).governor;
+    first.reportRateLimited(1, { retryAfterSeconds: 3_600 });
+
+    // A fresh process, as after `fmcp stop && fmcp start`.
+    const restarted = makeGovernor({ store }, clock).governor;
+    const error = await rejection(restarted.acquire(1));
+
+    // Refused locally: the point is that no request is thrown at Figma to be refused again.
+    expect(error.details.source).toBe('figma');
+    expect(restarted.status().tiers[0]?.blockedUntil).not.toBeNull();
+  });
+
+  it('starts clean when the penalty has expired in the meantime', async () => {
+    const clock = new FakeClock();
+    let saved: unknown;
+    const store = { load: () => saved as never, save: (snapshot: unknown) => { saved = snapshot; } };
+
+    makeGovernor({ store }, clock).governor.reportRateLimited(1, { retryAfterSeconds: 60 });
+    clock.advance(61_000);
+
+    const restarted = makeGovernor({ store }, clock).governor;
+    await expect(restarted.acquire(1)).resolves.toBeUndefined();
+  });
+});

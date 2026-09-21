@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 data/
+# Holds a live MCP API key in an Authorization header.
+.mcp.json

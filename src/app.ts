@@ -15,6 +15,7 @@ import { FetchImageDownloader } from './core/figma/image-downloader.js';
 import { HttpFigmaApi } from './core/figma/http-figma-api.js';
 import type { FigmaApi } from './core/figma/figma-api.js';
 import { TokenBucketGovernor, type RateLimitGate } from './core/rate-limit/governor.js';
+import { FileGovernorStateStore } from './core/rate-limit/governor-state.js';
 import { ApiKeyAuthenticator } from './core/security/api-keys.js';
 import { FileAccessPolicy } from './core/security/file-access-policy.js';
 import { ImageUrlPolicy } from './core/security/image-url-policy.js';
@@ -22,10 +23,14 @@ import { UrlSigner } from './core/security/url-signer.js';
 import { LocalDiskExportStorage, type ExportStorage } from './core/storage/export-storage.js';
 import { GetCommentsUseCase } from './features/comments/get-comments.js';
 import { ExportFramesUseCase } from './features/export/export-frames.js';
+import { GetSvgUseCase } from './features/export/get-svg.js';
 import { FileOutlineService } from './features/frames/file-outline.js';
 import { ListFramesUseCase } from './features/frames/list-frames.js';
 import { LibraryReader, ListLibraryUseCase } from './features/library/list-library.js';
 import { GetNodeTreeUseCase } from './features/nodes/get-node-tree.js';
+import { GetNodeSpecUseCase } from './features/nodes/get-node-spec.js';
+import { FileIndexService } from './features/search/file-index.js';
+import { SearchNodesUseCase } from './features/search/search-nodes.js';
 import { GetQuotaStatusUseCase } from './features/quota/get-quota-status.js';
 import { FileResolver } from './features/shared/file-resolver.js';
 import { GetDesignTokensUseCase } from './features/tokens/design-tokens.js';
@@ -70,6 +75,10 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
       3: policyFor(config.figma.requestsPerMinute[3]),
     },
     maxQueueWaitMs: config.figma.maxQueueWaitMs,
+    costBytesPerUnit: config.figma.costBytesPerUnit,
+    store: new FileGovernorStateStore(join(config.storage.dataDir, 'governor.json'), (reason) =>
+      logger.warn('Could not persist rate-limit state', { reason }),
+    ),
     clock,
     ...(overrides.sleep ? { sleep: overrides.sleep } : {}),
   });
@@ -119,15 +128,22 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
   // --- use cases -------------------------------------------------------------------------
   const ttls = config.storage.ttls;
   const outlines = new FileOutlineService(api, loader, ttls);
+  const index = new FileIndexService(api, loader, ttls);
   const library = new LibraryReader(api, loader, ttls);
   const useCases: UseCases = {
     listFrames: new ListFramesUseCase(files, outlines),
+    searchNodes: new SearchNodesUseCase(files, outlines, index),
     getNodeTree: new GetNodeTreeUseCase(api, loader, files, ttls),
+    getNodeSpec: new GetNodeSpecUseCase(api, loader, files, ttls),
     exportFrames: new ExportFramesUseCase(api, loader, files, outlines, downloader, storage, links, ttls, {
       maxNodes: config.export.maxNodes,
       batchSize: config.export.batchSize,
       downloadConcurrency: config.export.downloadConcurrency,
     }, logger),
+    getSvg: new GetSvgUseCase(api, loader, files, outlines, downloader, ttls, {
+      batchSize: config.export.batchSize,
+      downloadConcurrency: config.export.downloadConcurrency,
+    }),
     listStyles: new ListLibraryUseCase('styles', files, library),
     listComponents: new ListLibraryUseCase('components', files, library),
     getDesignTokens: new GetDesignTokensUseCase(api, loader, files, library, ttls, config.export.batchSize),
@@ -153,6 +169,7 @@ export function buildApp(config: AppConfig, logger: Logger, overrides: AppOverri
         sessions,
         loginLimiter,
         secureCookies: config.server.publicBaseUrl.startsWith('https://'),
+        quota: useCases.getQuotaStatus,
         logger,
       },
     }),

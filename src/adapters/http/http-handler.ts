@@ -12,6 +12,7 @@ import type { Logger } from '../../infra/logger.js';
 import { handleAdminRoute, type AdminRouteDeps } from './admin-routes.js';
 import { ADMIN_UI_HTML } from './admin-ui.js';
 import { archiveResource, fileResource } from './download-links.js';
+import { listDocs, readDoc } from './docs-content.js';
 import type { SlidingWindowLimiter } from './sliding-window-limiter.js';
 
 export interface HttpHandlerDeps {
@@ -47,6 +48,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 const FILE_ROUTE = /^\/exports\/([a-f0-9]{32})\/files\/([^/]+)$/;
 const ARCHIVE_ROUTE = /^\/exports\/([a-f0-9]{32})\/archive\.zip$/;
+const DOC_ROUTE = /^\/api\/docs\/([a-z0-9-]+)$/;
 
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
@@ -217,7 +219,20 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       return undefined;
     }
 
+    if (path === '/api/docs' && req.method === 'GET') {
+      sendJson(res, 200, await listDocs());
+      return undefined;
+    }
+
     if (req.method === 'GET') {
+      const docMatch = DOC_ROUTE.exec(path);
+      if (docMatch?.[1]) {
+        const markdown = await readDoc(docMatch[1]);
+        if (markdown === undefined) throw new HttpError(404, 'No such doc.');
+        res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(markdown);
+        return undefined;
+      }
       const file = FILE_ROUTE.exec(path);
       if (file?.[1] && file[2]) {
         await handleFile(url, res, file[1], file[2]);

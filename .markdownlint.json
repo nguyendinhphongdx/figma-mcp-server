@@ -1,0 +1,7 @@
+{
+  "//": "The README uses a centred header block, collapsible sections and badge rows — the layout every large repo uses, and all of it is inline HTML. MD033/MD041 exist for prose documents, not for a project landing page.",
+  "MD033": false,
+  "MD041": false,
+  "MD013": false,
+  "MD060": false
+}

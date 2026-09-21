@@ -191,7 +191,11 @@ export class HttpFigmaApi implements FigmaApi {
 
     if (response.ok) {
       this.options.gate.reportSuccess(tier);
-      return (await response.json()) as T;
+      // Read as text first so the governor learns how big the answer was. Figma prices this
+      // endpoint by payload size, and a `depth` query can turn one request into megabytes.
+      const body = await response.text();
+      this.options.gate.reportCost(tier, Buffer.byteLength(body));
+      return JSON.parse(body) as T;
     }
     throw await this.toError(tier, response);
   }

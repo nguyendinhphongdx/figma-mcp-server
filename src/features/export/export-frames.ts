@@ -9,7 +9,7 @@ import {
 } from '../../core/domain/errors.js';
 import type { CachedLoader } from '../../core/cache/cached-loader.js';
 import type { FigmaApi, ImageFormat } from '../../core/figma/figma-api.js';
-import { IMAGE_FORMATS, supportsScale } from '../../core/figma/figma-api.js';
+import { IMAGE_FORMATS } from '../../core/figma/figma-api.js';
 import type { ImageDownloader } from '../../core/figma/image-downloader.js';
 import type { ExportStorage } from '../../core/storage/export-storage.js';
 import { buildFileName } from '../../core/storage/file-namer.js';
@@ -17,6 +17,7 @@ import type { Logger } from '../../infra/logger.js';
 import { chunk, mapWithConcurrency } from '../../infra/pool.js';
 import type { FileOutlineService } from '../frames/file-outline.js';
 import type { CacheTtls } from '../shared/cache-ttls.js';
+import { imageUrlKey } from '../shared/image-url-cache.js';
 import type { FileResolver } from '../shared/file-resolver.js';
 
 export interface ExportFramesInput {
@@ -31,6 +32,8 @@ export interface ExportFramesInput {
   /** Name files after layer names (free when the file outline is cached, otherwise one extra request). */
   readonly useLayerNames?: boolean | undefined;
   readonly createArchive?: boolean | undefined;
+  /** Also return the rendered images in the tool result so the caller can look at them. */
+  readonly inline?: boolean | undefined;
   /** Ignore cached image URLs and render again. */
   readonly refresh?: boolean | undefined;
 }
@@ -47,6 +50,21 @@ export interface FailedExport {
   readonly reason: string;
 }
 
+/**
+ * A rendered image carried back in the tool result. The MCP adapter turns these into image content
+ * blocks and keeps the base64 out of the JSON payload, where it would cost tokens for nothing.
+ */
+export interface ImagePreview {
+  readonly nodeId: string;
+  readonly mimeType: string;
+  readonly base64: string;
+}
+
+/** Inlining is a look-at-it convenience, not a transport: past these limits, use the links. */
+export const INLINE_MAX_FILES = 5;
+export const INLINE_MAX_BYTES = 3 * 1024 * 1024;
+const INLINE_MIME_TYPES: Partial<Record<ImageFormat, string>> = { png: 'image/png', jpg: 'image/jpeg' };
+
 export interface ExportFramesOutput {
   readonly status: 'complete' | 'partial' | 'failed';
   readonly exportId: string;
@@ -59,6 +77,10 @@ export interface ExportFramesOutput {
   readonly figmaRequestsUsed: number;
   /** Set when Figma's rate limit cut the export short. */
   readonly rateLimited?: RateLimitDetails;
+  /** Present when `inline` was asked for and granted; stripped from the JSON payload. */
+  readonly previews?: readonly ImagePreview[];
+  /** Why `inline` was asked for but not honoured. */
+  readonly inlineSkipped?: string;
 }
 
 /** Issues time-limited download links for stored exports (implemented by the HTTP adapter). */
@@ -79,10 +101,6 @@ const DEFAULTS = { format: 'jpg', scale: 2 } as const;
 interface Candidate {
   readonly nodeId: string;
   readonly fileName: string;
-}
-
-function imageUrlKey(fileKey: string, nodeId: string, format: ImageFormat, scale: number, absolute: boolean): string {
-  return `imgurl:${fileKey}:${nodeId}:${format}:${supportsScale(format) ? scale : 1}:${absolute ? 'abs' : 'crop'}`;
 }
 
 function nameKey(fileKey: string, nodeId: string): string {
@@ -137,7 +155,42 @@ export class ExportFramesUseCase {
     const exportId = randomBytes(16).toString('hex');
     const stored = await this.downloadAll(exportId, fileKey, candidates, urls, { format, scale, absolute }, run);
 
-    return this.buildOutput(exportId, stored, input.createArchive ?? true, run);
+    const output = this.buildOutput(exportId, stored, input.createArchive ?? true, run);
+    return input.inline ? { ...output, ...(await this.inlinePreviews(exportId, stored, format)) } : output;
+  }
+
+  /**
+   * Reads the just-stored images back as base64 so the caller can see what it exported instead of
+   * only being told where to download it.
+   */
+  private async inlinePreviews(
+    exportId: string,
+    files: readonly ExportedFile[],
+    format: ImageFormat,
+  ): Promise<{ previews?: readonly ImagePreview[]; inlineSkipped?: string }> {
+    const mimeType = INLINE_MIME_TYPES[format];
+    if (!mimeType) {
+      return { inlineSkipped: `inline only supports png and jpg, not ${format}; for svg use figma_get_svg` };
+    }
+    if (files.length === 0) {
+      return {};
+    }
+    if (files.length > INLINE_MAX_FILES) {
+      return { inlineSkipped: `inline is limited to ${INLINE_MAX_FILES} images per call; ${files.length} were exported` };
+    }
+
+    const previews: ImagePreview[] = [];
+    for (const file of files) {
+      if (file.bytes > INLINE_MAX_BYTES) {
+        return { inlineSkipped: `"${file.fileName}" is ${file.bytes} bytes, above the ${INLINE_MAX_BYTES}-byte inline limit; lower scale` };
+      }
+      const opened = await this.storage.open(exportId, file.fileName);
+      if (!opened) continue;
+      const chunks: Buffer[] = [];
+      for await (const piece of opened.stream) chunks.push(Buffer.isBuffer(piece) ? piece : Buffer.from(piece as string));
+      previews.push({ nodeId: file.nodeId, mimeType, base64: Buffer.concat(chunks).toString('base64') });
+    }
+    return previews.length > 0 ? { previews } : {};
   }
 
   private async resolveNames(fileKey: string, nodeIds: readonly string[], run: RunState): Promise<Map<string, string>> {
